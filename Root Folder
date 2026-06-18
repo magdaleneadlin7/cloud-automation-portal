@@ -1,0 +1,128 @@
+from flask import Flask, request, render_template_string
+import subprocess
+import threading
+import time
+import os
+
+app = Flask(__name__)
+
+TERRAFORM_DIR = r"C:\Users\Magda\cloud-provisioning-automation\cloud-automation-portal\terraform"
+TERRAFORM_BIN = r"C:\terraform\terraform.exe"
+
+# ---------------- UI ----------------
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cloud Automation Portal</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #0f172a;
+            color: white;
+            text-align: center;
+        }
+        .box {
+            background: #1e293b;
+            padding: 25px;
+            margin: 60px auto;
+            width: 420px;
+            border-radius: 12px;
+        }
+        select, input, button {
+            width: 90%;
+            padding: 10px;
+            margin: 10px;
+            border-radius: 8px;
+            border: none;
+        }
+        button {
+            background: #38bdf8;
+            color: black;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2>Cloud Automation Portal</h2>
+
+    <form method="POST" action="/provision">
+
+        <select name="resource_type">
+            <option value="s3">S3 Bucket</option>
+            <option value="ec2">EC2 Instance</option>
+        </select>
+
+        <input name="name" placeholder="Resource Name" required>
+
+        <input name="ami" placeholder="AMI (EC2 only)" value="ami-0e38835daf6b8a2b9">
+
+        <input name="ttl" placeholder="Auto-delete minutes" value="2">
+
+        <button type="submit">Create Resource</button>
+
+    </form>
+</div>
+
+</body>
+</html>
+"""
+
+# ---------------- TERRAFORM APPLY (BACKGROUND) ----------------
+def run_apply():
+    subprocess.run([TERRAFORM_BIN, "init"], cwd=TERRAFORM_DIR, shell=True)
+    subprocess.run([TERRAFORM_BIN, "apply", "-auto-approve"], cwd=TERRAFORM_DIR, shell=True)
+
+# ---------------- AUTO DESTROY ----------------
+def auto_destroy(ttl):
+    time.sleep(ttl * 60)
+    subprocess.run([TERRAFORM_BIN, "destroy", "-auto-approve"], cwd=TERRAFORM_DIR, shell=True)
+
+# ---------------- ROUTES ----------------
+@app.route("/")
+def home():
+    return render_template_string(HTML)
+
+
+@app.route("/provision", methods=["POST"])
+def provision():
+    resource_type = request.form["resource_type"]
+    name = request.form["name"]
+    ami = request.form.get("ami", "ami-0e38835daf6b8a2b9")
+    ttl = int(request.form.get("ttl", 2))
+
+    tfvars_path = os.path.join(TERRAFORM_DIR, "terraform.tfvars")
+
+    # write tfvars
+    if resource_type == "s3":
+        with open(tfvars_path, "w") as f:
+            f.write(f'bucket_name = "{name}-bucket"\n')
+
+    elif resource_type == "ec2":
+        with open(tfvars_path, "w") as f:
+            f.write(f"""
+ec2_name = "{name}"
+ami_id = "{ami}"
+""")
+
+    # RUN APPLY IN BACKGROUND (DO NOT BLOCK UI)
+    threading.Thread(target=run_apply, daemon=True).start()
+
+    # AUTO DELETE TIMER
+    threading.Thread(target=auto_destroy, args=(ttl,), daemon=True).start()
+
+    return f"""
+    <h2>SUCCESS</h2>
+    <p>Resource Type: {resource_type}</p>
+    <p>Name: {name}</p>
+    <p>Status: Provisioning started in background</p>
+    <p>Auto-delete in: {ttl} minutes</p>
+    <a href="/">Go Back</a>
+    """
+
+# ---------------- RUN ----------------
+if __name__ == "__main__":
+    app.run(debug=True)
